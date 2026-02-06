@@ -1,10 +1,12 @@
 import re
-import io
 import numpy as np
 import pandas as pd
 from difflib import SequenceMatcher
 
 
+# -----------------------------
+# File IO
+# -----------------------------
 def read_purchase_file(uploaded_file) -> pd.DataFrame:
     name = uploaded_file.name.lower()
     if name.endswith(".csv"):
@@ -14,6 +16,9 @@ def read_purchase_file(uploaded_file) -> pd.DataFrame:
     raise ValueError("Unsupported file type. Upload CSV/XLSX.")
 
 
+# -----------------------------
+# Cleaning
+# -----------------------------
 def clean_amount(series: pd.Series) -> pd.Series:
     s = series.astype(str).str.replace(r"[,\s]", "", regex=True)
     s = s.str.replace(r"[^0-9\.\-]", "", regex=True)
@@ -21,8 +26,7 @@ def clean_amount(series: pd.Series) -> pd.Series:
 
 
 def standardize_date(series: pd.Series, dayfirst=True) -> pd.Series:
-    dt = pd.to_datetime(series, errors="coerce", dayfirst=dayfirst, infer_datetime_format=True)
-    return dt
+    return pd.to_datetime(series, errors="coerce", dayfirst=dayfirst, infer_datetime_format=True)
 
 
 def normalize_text(x: str) -> str:
@@ -33,6 +37,30 @@ def normalize_text(x: str) -> str:
     return x
 
 
+def normalize_description(series: pd.Series) -> pd.Series:
+    """Light normalization only (does NOT merge different items)."""
+    s = series.fillna("").astype(str)
+    s = s.str.replace(r"\s+", " ", regex=True).str.strip()
+    return s
+
+
+# -----------------------------
+# Exclusion: master-data-like fields
+# -----------------------------
+EXCLUDE_HARMONIZE_PATTERNS = [
+    r"\bid\b", r"\bcode\b", r"\bsku\b", r"\bhsn\b", r"\bsac\b", r"\bpan\b", r"\bgstin\b",
+    r"\bmaterial\s*id\b", r"\bitem\s*id\b", r"\bvendor\s*id\b", r"\bsupplier\s*id\b",
+    r"\bgl\b", r"\baccount\b", r"\basset\s*id\b", r"\bserial\b"
+]
+
+def is_master_like_column(colname: str) -> bool:
+    c = normalize_text(colname)
+    return any(re.search(pat, c) for pat in EXCLUDE_HARMONIZE_PATTERNS)
+
+
+# -----------------------------
+# Fuzzy harmonization
+# -----------------------------
 def similarity(a: str, b: str) -> float:
     return SequenceMatcher(None, a, b).ratio()
 
@@ -41,15 +69,14 @@ def harmonize_names(series: pd.Series, threshold: float = 0.92, min_len: int = 3
     """
     Fuzzy harmonize values in a column.
     Returns:
-      canonical_series, mapping_df
+      canonical_series, mapping_df, changed_mask
     Notes:
-      - This is O(U^2) on unique normalized values. For huge U it can be slow.
-      - We cap uniques to max_uniques for demo safety.
+      - Keeps ALL rows. Only changes values that are similar above threshold.
+      - Caps unique values for demo safety.
     """
     s_raw = series.fillna("").astype(str)
     s_norm = s_raw.map(normalize_text)
 
-    # Limit unique values to avoid worst-case blowups
     uniques = s_norm.value_counts().index.tolist()
     if len(uniques) > max_uniques:
         uniques = uniques[:max_uniques]
@@ -90,6 +117,8 @@ def harmonize_names(series: pd.Series, threshold: float = 0.92, min_len: int = 3
     )
     canon_final = canon_norm.map(lambda x: best_raw.get(x, x))
 
+    changed_mask = canon_final.astype(str).str.strip().ne(s_raw.astype(str).str.strip())
+
     mapping_df = (
         tmp.assign(canonical=canon_final)
            .drop_duplicates()
@@ -97,29 +126,21 @@ def harmonize_names(series: pd.Series, threshold: float = 0.92, min_len: int = 3
            .reset_index(drop=True)
     )
 
-    return canon_final, mapping_df
+    return canon_final, mapping_df, changed_mask
 
 
-def convert_to_inr(amount: pd.Series, currency: pd.Series | None, fx_table: dict, default_currency: str = "INR"):
+# -----------------------------
+# Currency conversion (future-ready)
+# -----------------------------
+def parse_fx_to_inr(text: str) -> dict:
     """
-    Convert amounts to INR.
-    - If currency column missing (currency=None): assumes default_currency for all rows.
-    - Future-ready: if currency column exists later, pass it to get row-wise conversion.
-
-    Returns:
-      amount_in_inr, missing_fx_mask, currency_used
+    Input format lines:
+      INR=1
+      USD=83.2
+    Returns dict {CCY: rate_to_inr}
     """
-    amt = pd.to_numeric(amount, errors="coerce")
-
-    if currency is None:
-        cur = pd.Series([default_currency] * len(amt), index=amt.index)
-    else:
-        cur = currency.fillna(default_currency).astype(str)
-
-    cur = cur.str.upper().str.strip()
-    fx = cur.map(lambda c: fx_table.get(c, np.nan))
-
-    inr = amt * fx
-    missing = fx.isna()
-
-    return inr, missing, cur
+    fx = {}
+    for line in (text or "").splitlines():
+        if "=" in line:
+            k, v = line.split("=", 1)
+            k = k.strip().upper()
