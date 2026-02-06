@@ -24,20 +24,10 @@ def standardize_date(series: pd.Series, dayfirst=True) -> pd.Series:
 
 
 def normalize_description(series: pd.Series) -> pd.Series:
+    """Light normalization only (no fuzzy merging)."""
     s = series.fillna("").astype(str)
     s = s.str.replace(r"\s+", " ", regex=True).str.strip()
     return s
-
-
-EXCLUDE_HARMONIZE_PATTERNS = [
-    r"\bid\b", r"\bcode\b", r"\bsku\b", r"\bhsn\b", r"\bsac\b", r"\bpan\b", r"\bgstin\b",
-    r"\bmaterial\s*id\b", r"\bitem\s*id\b", r"\bvendor\s*id\b", r"\bsupplier\s*id\b",
-    r"\bgl\b", r"\baccount\b", r"\basset\s*id\b", r"\bserial\b"
-]
-
-def is_master_like_column(colname: str) -> bool:
-    c = (colname or "").strip().lower()
-    return any(re.search(pat, c) for pat in EXCLUDE_HARMONIZE_PATTERNS)
 
 
 def _normalize_text(x: str) -> str:
@@ -53,6 +43,12 @@ def _similarity(a: str, b: str) -> float:
 
 
 def harmonize_names(series: pd.Series, threshold: float = 0.92, min_len: int = 3, max_uniques: int = 2000):
+    """
+    Fuzzy harmonize values in a column.
+    Returns:
+      canonical_series, mapping_df, changed_mask
+    Keeps ALL rows; only values that match above threshold are replaced.
+    """
     s_raw = series.fillna("").astype(str)
     s_norm = s_raw.map(_normalize_text)
 
@@ -101,45 +97,5 @@ def harmonize_names(series: pd.Series, threshold: float = 0.92, min_len: int = 3
            .sort_values(["canonical", "raw"])
            .reset_index(drop=True)
     )
+
     return canon_final, mapping_df, changed_mask
-
-
-def parse_fx_to_inr(text: str) -> dict:
-    fx = {}
-    for line in (text or "").splitlines():
-        if "=" in line:
-            k, v = line.split("=", 1)
-            k = k.strip().upper()
-            try:
-                fx[k] = float(v.strip())
-            except:
-                pass
-    return fx
-
-
-def convert_currency(
-    amount: pd.Series,
-    source_currency: pd.Series | None,
-    target_currency: str,
-    fx_to_inr: dict,
-    default_source: str = "INR"
-):
-    amt = pd.to_numeric(amount, errors="coerce")
-
-    if source_currency is None:
-        src = pd.Series([default_source] * len(amt), index=amt.index)
-    else:
-        src = source_currency.fillna(default_source).astype(str)
-
-    src = src.astype(str).str.upper().str.strip()
-    tgt = str(target_currency).upper().strip()
-
-    src_fx = src.map(lambda c: fx_to_inr.get(c, np.nan))
-    tgt_fx = fx_to_inr.get(tgt, np.nan)
-
-    missing = src_fx.isna() | pd.isna(tgt_fx)
-
-    inr = amt * src_fx
-    converted = inr / tgt_fx if not pd.isna(tgt_fx) else pd.Series([np.nan] * len(amt), index=amt.index)
-
-    return converted, src, tgt, missing
