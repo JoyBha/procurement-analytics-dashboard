@@ -1,3 +1,27 @@
+# -*- coding: utf-8 -*-
+import sys
+from pathlib import Path
+
+# Ensure repo root is importable (so "import utils" works from pages/)
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+import streamlit as st
+import pandas as pd
+import numpy as np
+
+from utils import (
+    read_purchase_file, clean_amount, standardize_date,
+    harmonize_names, normalize_description, is_master_like_column,
+    parse_fx_to_inr, convert_currency
+)
+
+# IMPORTANT: set_page_config must appear BEFORE other Streamlit UI calls
+st.set_page_config(page_title="Data Harmonization", page_icon="🧹", layout="wide")
+
+st.title("🧹 App 1 — Data Harmonization")
+st.caption("Select fields/actions to harmonize. Output retains all rows (changed + unchanged).")
 import sys
 from pathlib import Path
 
