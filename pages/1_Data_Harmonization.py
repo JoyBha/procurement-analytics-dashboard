@@ -46,41 +46,56 @@ harm_supplier = st.checkbox("Harmonize supplier names", value=True)
 harm_dept = st.checkbox("Harmonize department names", value=True)
 harm_plant = st.checkbox("Harmonize plant names", value=True)
 
+# ---- FX settings (future-ready) ----
+# Default: INR only (no conversion needed today)
+fx_table = {"INR": 1.0}
+
 with st.expander("Optional: FX settings (use later when currency column exists)", expanded=False):
+    st.caption("If you add a currency column later, maintain FX here. For now INR is assumed.")
     fx_default = {"INR": 1.0, "USD": 83.0, "EUR": 90.0, "GBP": 105.0}
     fx_text = st.text_area(
         "FX rates (INR per 1 unit). One per line like: USD=83.2",
         value="\n".join([f"{k}={v}" for k, v in fx_default.items()])
     )
-    fx_table = {}
+
+    # Parse FX
+    parsed_fx = {}
     for line in fx_text.splitlines():
         if "=" in line:
             k, v = line.split("=", 1)
             k = k.strip().upper()
             try:
-                fx_table[k] = float(v.strip())
+                parsed_fx[k] = float(v.strip())
             except:
                 pass
-else:
-    fx_table = {"INR": 1.0}
+
+    # Update fx_table only if user provided something valid
+    if parsed_fx:
+        fx_table = parsed_fx
 
 if st.button("Run Harmonization ✅"):
     work = df.copy()
 
+    # Clean amount
     work["_amount"] = clean_amount(work[amount_col])
+
+    # Standardize date
     work["_date"] = standardize_date(work[date_col], dayfirst=dayfirst)
     work["_date_iso"] = work["_date"].dt.strftime("%Y-%m-%d")
 
+    # Core text fields
     work["_desc"] = work[desc_col].astype(str)
     work["_supplier"] = work[supplier_col].astype(str)
 
+    # Optional dimensions
     work["_dept"] = work[dept_col].astype(str) if dept_col != "(none)" else "Unknown"
     work["_plant"] = work[plant_col].astype(str) if plant_col != "(none)" else "Unknown"
     work["_capexopex"] = work[capex_col].astype(str) if capex_col != "(none)" else "Unknown"
 
+    # Currency column: optional now, used later
     currency_series = work[currency_col] if currency_col != "(none)" else None
 
-    # INR assumption today:
+    # Convert to INR (today: all INR, fx_table has INR=1)
     work["_spend_inr"], work["_missing_fx"], work["_currency_used"] = convert_to_inr(
         amount=work["_amount"],
         currency=currency_series,
@@ -88,6 +103,7 @@ if st.button("Run Harmonization ✅"):
         default_currency="INR"
     )
 
+    # Drop missing required
     if drop_missing:
         before = len(work)
         work = work.dropna(subset=["_spend_inr", "_date", "_desc", "_supplier"])
@@ -97,24 +113,28 @@ if st.button("Run Harmonization ✅"):
 
     mappings = {}
 
+    # Harmonize Supplier
     if harm_supplier:
         work["_supplier_h"], map_sup = harmonize_names(work["_supplier"], threshold=fuzzy_threshold)
         mappings["Supplier"] = map_sup
     else:
         work["_supplier_h"] = work["_supplier"]
 
+    # Harmonize Department
     if harm_dept:
         work["_dept_h"], map_dept = harmonize_names(work["_dept"], threshold=fuzzy_threshold)
         mappings["Department"] = map_dept
     else:
         work["_dept_h"] = work["_dept"]
 
+    # Harmonize Plant
     if harm_plant:
         work["_plant_h"], map_plant = harmonize_names(work["_plant"], threshold=fuzzy_threshold)
         mappings["Plant"] = map_plant
     else:
         work["_plant_h"] = work["_plant"]
 
+    # Standard downstream columns
     work["_spend"] = work["_spend_inr"]
     work["_date_std"] = work["_date"]
 
@@ -128,3 +148,9 @@ if st.button("Run Harmonization ✅"):
         work[["_date_iso", "_spend", "_currency_used", "_supplier_h", "_dept_h", "_plant_h", "_capexopex", "_desc"]].head(50),
         use_container_width=True
     )
+
+    # Only relevant once currency col exists
+    if currency_col != "(none)":
+        fx_missing_count = int(work["_missing_fx"].sum())
+        if fx_missing_count > 0:
+            st.warning(f"{fx_missing_count} rows have missing FX rates. Update FX mapping or currency values.")
