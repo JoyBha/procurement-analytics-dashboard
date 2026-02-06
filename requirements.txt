@@ -5,4 +5,4 @@ plotly
 scikit-learn
 openpyxl
 openai
-python-dotenv
+requests
